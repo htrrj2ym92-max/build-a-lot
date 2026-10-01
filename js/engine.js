@@ -7,51 +7,46 @@
 })(typeof self !== 'undefined' ? self : this, function (D) {
   const { HOUSES, UPGRADES, SPECIALS, LEVELS, DAY_SECONDS, HOUSE_DECAY_DAYS, TRAINING_COST } = D;
 
-  // Seeded PRNG (mulberry32); the seed lives in state so saved games replay the same market.
-  function nextRandom(state) {
-    let t = (state.seed = (state.seed + 0x6d2b79f5) >>> 0);
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  }
-
   function parseLot(code, i, perRow) {
     const lot = {
       id: i, row: i < perRow ? 0 : 1, col: i % perRow,
-      owned: false, price: 0, kind: 'empty', house: null, special: null,
+      owned: false, price: 0, landPrice: 25000, kind: 'empty', house: null, special: null,
       task: null, rentTimer: 0, prodTimer: 0, workshopActive: false,
     };
     if (code === 'o') {
       lot.owned = true;
-      lot.price = 25000;
+      lot.price = lot.landPrice;
     } else if (code[0] === 's') {
-      lot.price = Number(code.slice(1));
+      lot.price = lot.landPrice;
     } else if (code[0] === 'r') {
       lot.price = Number(code.slice(1));
       lot.kind = 'rundown';
+    } else if (code.startsWith('d:')) {
+      const [, type] = code.split(':');
+      lot.kind = 'damaged-sale';
+      lot.house = { type, upgrades: [], stars: 0, damaged: true, decay: HOUSE_DECAY_DAYS };
+      lot.price = Math.round(HOUSES[type].value / 2);
     } else if (code.startsWith('h:')) {
       lot.owned = true;
-      lot.price = 25000;
+      lot.price = lot.landPrice;
       lot.kind = 'house';
-      lot.house = { type: code.slice(2), upgrades: [], damaged: false, decay: 0 };
+      lot.house = { type: code.slice(2), upgrades: [], stars: 0, damaged: false, decay: 0 };
     }
     lot.basePrice = lot.price;
     return lot;
   }
 
-  function createGame(levelIndex, seed) {
+  function createGame(levelIndex) {
     const L = LEVELS[levelIndex];
     return {
       level: levelIndex,
-      seed: (seed == null ? Math.floor(Math.random() * 2 ** 32) : seed) >>> 0,
       time: 0,
       day: 1,
       cash: L.cash,
       materials: L.materials,
       workers: L.workers,
       hired: 0,
-      matPrice: D.MATERIAL_PRICE.start,
-      matTrend: 0,
+      delivery: null,
       workshopTraining: false,
       lots: L.lots.map((c, i) => parseLot(c, i, L.perRow)),
       stats: { built: 0, sold: 0, upgrades: 0, demolished: 0, rentCollected: 0 },
@@ -68,11 +63,10 @@
   const hasSpecial = (s, type) => s.lots.some((l) => l.kind === 'special' && l.special === type);
   const hasWorkshop = (s) => hasSpecial(s, 'workshop');
   const buildSpeed = (s) => (hasWorkshop(s) && s.workshopTraining ? D.WORKSHOP_SPEED : 1);
-  const hireCost = (s) => {
-    const standard = D.HIRE_BASE + D.HIRE_STEP * s.hired;
-    return hasWorkshop(s) ? Math.round(standard / 2) : standard;
-  };
+  const hireCost = (s) => Math.round((D.HIRE_COSTS[Math.min(s.hired, D.HIRE_COSTS.length - 1)] || 120000) / (hasWorkshop(s) ? 2 : 1));
   const upgradeMaterials = (type, key) => Math.max(1, Math.round(HOUSES[type].materials * UPGRADES[key].matPct));
+  const orderFor = (amount) => D.MATERIAL_ORDERS.find((order) => order.amount === amount);
+  const orderPrice = (s, order) => Math.round(order.price / (hasSpecial(s, 'mill') ? 2 : 1));
 
   function neighbours(s, lot) {
     return s.lots.filter(
@@ -89,15 +83,15 @@
     if (lot.kind !== 'house') return 0;
     if (lot.house.damaged) return 0;
     const h = HOUSES[lot.house.type];
-    const bonus = lot.house.upgrades.reduce((b, k) => b + UPGRADES[k].rentBonus, 0) + parkBonus(s, lot);
-    return Math.round(h.rent * (1 + bonus));
+    const baseRent = h.rents[Math.min(lot.house.stars || 0, 3)];
+    return Math.round(baseRent * (1 + parkBonus(s, lot)));
   }
 
   function saleValue(s, lot) {
     if (lot.kind !== 'house') return 0;
     const h = HOUSES[lot.house.type];
-    const bonus = lot.house.upgrades.reduce((b, k) => b + UPGRADES[k].valueBonus, 0);
-    return Math.round((h.value * (1 + bonus) + lot.basePrice) / 50) * 50;
+    const bonus = (lot.house.stars || 0) * 0.10 + lot.house.upgrades.reduce((b, k) => b + UPGRADES[k].valueBonus, 0);
+    return Math.round(h.value * (1 + bonus) / 50) * 50;
   }
 
   // ---- Checks: each returns null when allowed, otherwise a reason for the player. ----
@@ -132,7 +126,7 @@
     if (!level(s).specials.includes(type)) return 'Not available here';
     if (!lot.owned) return 'Buy the lot first';
     if (lot.kind !== 'empty') return 'Lot is not empty';
-    if (type === 'workshop' && s.lots.some((l) => l.special === 'workshop')) return 'Only one workshop';
+    if (type === 'workshop' && s.lots.some((l) => l.special === 'workshop' || (l.task && l.task.kind === 'special' && l.task.type === 'workshop'))) return 'Only one workshop';
     const sp = SPECIALS[type];
     return idle(lot) || needs(s, 0, sp.materials, sp.workers);
   }
@@ -140,7 +134,8 @@
   function checkUpgrade(s, lot, key) {
     if (!level(s).upgrades.includes(key)) return 'Not available here';
     if (lot.kind !== 'house') return 'No house here';
-    if (lot.house.upgrades.includes(key)) return 'Already done';
+    if (lot.house.damaged) return 'Repair the house before upgrading';
+    if (key === 'star' ? (lot.house.stars || 0) >= 3 : lot.house.upgrades.includes(key)) return 'Already done';
     return idle(lot) || needs(s, 0, upgradeMaterials(lot.house.type, key), UPGRADES[key].workers);
   }
 
@@ -163,7 +158,10 @@
   }
 
   function checkMaterials(s, n) {
-    const cost = s.matPrice * n;
+    const order = orderFor(n);
+    if (!order) return 'Choose a listed material order';
+    if (s.delivery) return 'A material delivery is already on its way';
+    const cost = orderPrice(s, order);
     if (s.cash < cost) return `Needs $${cost.toLocaleString('en-US')}`;
     return null;
   }
@@ -177,7 +175,10 @@
 
   function checkInspect(s, lot) {
     if (lot.kind !== 'house') return 'No house here';
-    if (!lot.house.damaged && lot.house.decay < HOUSE_DECAY_DAYS * 0.5) return 'This house is in good condition';
+    if (lot.task) return idle(lot);
+    if (!hasWorkshop(s)) return 'Build a workshop to inspect houses';
+    const repair = lot.house.damaged ? D.REPAIR_MATERIALS[lot.house.type] : 0;
+    if (s.materials < repair) return `Needs ${repair - s.materials} more materials`;
     return null;
   }
 
@@ -205,6 +206,7 @@
       return act(checkBuyLot(s, lot), () => {
         spend(s, lot.price, 0);
         lot.owned = true;
+        if (lot.kind === 'damaged-sale') lot.kind = 'house';
       });
     },
     build(s, id, type) {
@@ -248,7 +250,7 @@
         s.stats.sold++;
         s.events.push({ type: 'money', lot: id, amount: value });
         s.events.push({ type: 'msg', text: `Sold the ${HOUSES[lot.house.type].name} for $${value.toLocaleString('en-US')}` });
-        Object.assign(lot, { owned: false, kind: 'empty', house: null, price: lot.basePrice, rentTimer: 0 });
+        Object.assign(lot, { owned: false, kind: 'empty', house: null, price: lot.landPrice, basePrice: lot.landPrice, rentTimer: 0 });
       });
     },
     hire(s) {
@@ -260,7 +262,10 @@
     },
     buyMaterials(s, n) {
       return act(checkMaterials(s, n), () => {
-        spend(s, s.matPrice * n, -n);
+        const order = orderFor(n);
+        spend(s, orderPrice(s, order), 0);
+        const duration = hasSpecial(s, 'mill') ? D.SAWMILL_DELIVERY_SECONDS : D.DELIVERY_SECONDS;
+        s.delivery = { amount: order.amount, remaining: duration, duration };
       });
     },
     train(s) {
@@ -276,9 +281,13 @@
     inspect(s, id) {
       const lot = s.lots[id];
       return act(checkInspect(s, lot), () => {
+        const repair = lot.house.damaged ? D.REPAIR_MATERIALS[lot.house.type] : 0;
+        spend(s, 0, repair);
         lot.house.damaged = false;
         lot.house.decay = 0;
-        s.events.push({ type: 'msg', text: `${HOUSES[lot.house.type].name} inspected and repaired` });
+        s.events.push({ type: 'msg', text: repair
+          ? `${HOUSES[lot.house.type].name} repaired for ${repair} materials`
+          : `${HOUSES[lot.house.type].name} inspected` });
       });
     },
   };
@@ -288,7 +297,7 @@
     lot.task = null;
     if (t.kind === 'build') {
       lot.kind = 'house';
-      lot.house = { type: t.type, upgrades: [], damaged: false, decay: 0 };
+      lot.house = { type: t.type, upgrades: [], stars: 0, damaged: false, decay: 0 };
       lot.rentTimer = 0;
       s.stats.built++;
       s.events.push({ type: 'msg', text: `Tenants moved into your new ${HOUSES[t.type].name}` });
@@ -299,13 +308,19 @@
       lot.prodTimer = 0;
       s.events.push({ type: 'msg', text: `${SPECIALS[t.type].name} is open` });
     } else if (t.kind === 'upgrade') {
-      lot.house.upgrades.push(t.type);
+      if (t.type === 'star') lot.house.stars = (lot.house.stars || 0) + 1;
+      else lot.house.upgrades.push(t.type);
       lot.house.decay = 0;
       lot.house.damaged = false;
       s.stats.upgrades++;
       s.events.push({ type: 'msg', text: `${UPGRADES[t.type].name} finished` });
     } else if (t.kind === 'demolish') {
       if (lot.kind === 'rundown') s.stats.demolished++;
+      if (lot.house) {
+        const reclaimed = Math.floor(HOUSES[lot.house.type].materials * 3 / 5);
+        s.materials += reclaimed;
+        if (reclaimed) s.events.push({ type: 'materials', lot: lot.id, amount: reclaimed });
+      }
       lot.kind = 'empty';
       lot.house = null;
       s.events.push({ type: 'msg', text: 'Lot cleared and ready to build' });
@@ -315,12 +330,6 @@
 
   function newDay(s) {
     s.day++;
-    const { min, max } = D.MATERIAL_PRICE;
-    const drift = Math.round((nextRandom(s) - 0.5) * 30);
-    const pull = Math.round((D.MATERIAL_PRICE.start - s.matPrice) * 0.15);
-    const next = Math.max(min, Math.min(max, s.matPrice + drift + pull));
-    s.matTrend = Math.sign(next - s.matPrice);
-    s.matPrice = next;
   }
 
   function goalProgress(s, g) {
@@ -385,6 +394,15 @@
     const speed = buildSpeed(s);
     s.time += dt;
     while (s.time >= s.day * DAY_SECONDS - EPS) newDay(s);
+    if (s.delivery) {
+      s.delivery.remaining -= dt;
+      if (s.delivery.remaining <= EPS) {
+        const amount = s.delivery.amount;
+        s.materials += amount;
+        s.delivery = null;
+        s.events.push({ type: 'materials', lot: null, amount });
+      }
+    }
 
     for (const lot of s.lots) {
       if (lot.task) {
@@ -410,13 +428,6 @@
             s.events.push({ type: 'rent', lot: lot.id });
           }
         }
-      } else if (lot.kind === 'special' && lot.special === 'mill') {
-        lot.prodTimer += dayDelta;
-        if (lot.prodTimer >= 1 - EPS) {
-          lot.prodTimer -= 1;
-          s.materials += D.MILL_OUTPUT;
-          s.events.push({ type: 'materials', lot: lot.id, amount: D.MILL_OUTPUT });
-        }
       }
     }
     checkGoals(s);
@@ -430,7 +441,7 @@
 
   return {
     createGame, tick, actions, drainEvents, rating,
-    freeWorkers, busyWorkers, hireCost, upgradeMaterials, rentFor, saleValue, parkBonus, neighbours, hasSpecial,
+    freeWorkers, busyWorkers, hireCost, upgradeMaterials, rentFor, saleValue, parkBonus, neighbours, hasSpecial, orderFor, orderPrice,
     goalProgress, goalLabel, checkGoals, hasWorkshop,
     checks: { buyLot: checkBuyLot, build: checkBuild, special: checkSpecial, upgrade: checkUpgrade, demolish: checkDemolish, sell: checkSell, hire: checkHire, materials: checkMaterials, train: checkTrain, inspect: checkInspect },
   };

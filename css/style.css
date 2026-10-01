@@ -181,6 +181,8 @@ kbd {
 .stat-label { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); font-weight: 700; }
 .stat-row { display: inline-flex; align-items: center; gap: 6px; }
 .stat-value { font-family: var(--font-mono); font-weight: 600; font-size: 18px; font-variant-numeric: tabular-nums; }
+.material-orders { display: flex; flex-wrap: wrap; gap: 3px; max-width: 250px; }
+.material-orders .btn { padding: 3px 5px; font-size: 11px; }
 .money { color: var(--good); }
 .price { text-transform: none; letter-spacing: 0; font-family: var(--font-mono); font-weight: 500; }
 .price.up { color: var(--accent); }
@@ -190,6 +192,17 @@ kbd {
 .speed button { border: 0; background: var(--surface); padding: 6px 10px; cursor: pointer; font-family: var(--font-mono); font-size: 13px; min-width: 38px; }
 .speed button + button { border-left: 1px solid var(--line); }
 .speed button[aria-pressed="true"] { background: var(--ink); color: var(--surface); }
+.delivery-indicator {
+  position: fixed; left: 50%; bottom: max(12px, env(safe-area-inset-bottom)); transform: translateX(-50%); z-index: 8;
+  display: flex; align-items: center; gap: 10px; min-width: min(360px, calc(100vw - 24px)); padding: 8px 12px;
+  border: 1px solid var(--line); border-radius: 10px; background: var(--surface); box-shadow: var(--shadow);
+  font-size: 13px; font-weight: 700;
+}
+.delivery-truck { font-size: 20px; }
+.delivery-label { white-space: nowrap; }
+.delivery-track { flex: 1; height: 8px; border-radius: 5px; overflow: hidden; background: var(--line); }
+.delivery-track i { display: block; width: var(--delivery-progress, 0%); height: 100%; background: var(--good); transition: width .1s linear; }
+.delivery-time { min-width: 38px; text-align: right; font-family: var(--font-mono); font-size: 12px; }
 
 .play { display: grid; grid-template-columns: minmax(0, 1fr) 330px; gap: 18px; padding-inline: 16px; padding-block: 18px 24px; align-items: start; }
 .board-wrap { overflow-x: auto; border-radius: 16px; box-shadow: var(--shadow); }
@@ -306,6 +319,8 @@ kbd {
 @media (max-width: 560px) {
   .hud { gap: 8px 14px; }
   .stat-value { font-size: 16px; }
+  .material-orders { max-width: 210px; }
+  .material-orders .btn { padding: 3px 4px; font-size: 10px; }
   .lot-label { font-size: 11px; padding-inline: 5px; }
   .board.paused::after { content: 'Paused'; }
 }

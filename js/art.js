@@ -244,7 +244,7 @@
     return s;
   }
 
-  function house(type, upgrades = []) {
+  function house(type, upgrades = [], stars = 0) {
     const c = STYLE[type];
     const wall = upgrades.includes('paint') ? c.paint : c.wall;
     const { svg, doors } = BODY[type](wall);
@@ -253,6 +253,7 @@
     s += svg;
     if (upgrades.includes('porch')) s += doors.map(porch).join('');
     if (upgrades.includes('yard')) s += yard(doors);
+    if (stars) s += `<text x="80" y="118" text-anchor="middle" font-size="8" font-weight="800" fill="#f2c14e" stroke="#5d4820" stroke-width=".5">${'★'.repeat(stars)}</text>`;
     return s;
   }
 
@@ -328,7 +329,10 @@
   function lotSVG(lot, id) {
     let inner = lawn(false);
     if (!lot.task) {
-      if (lot.kind === 'house') inner += house(lot.house.type, lot.house.upgrades);
+      if (lot.kind === 'house' || lot.kind === 'damaged-sale') {
+        inner += house(lot.house.type, lot.house.upgrades, lot.house.stars || 0);
+        if (lot.house.damaged) inner += `<circle cx="134" cy="27" r="9" fill="#c94c3b"/><text x="134" y="31" text-anchor="middle" font-size="11" font-weight="800" fill="#fff">!</text>`;
+      }
       else if (lot.kind === 'special') inner += SPECIAL[lot.special]();
       else if (lot.kind === 'rundown') inner += rundown();
       else if (lot.owned) inner += stakes() + tree(146, 30, 0.7);
@@ -339,7 +343,10 @@
       let before = '', after = '';
       if (t.kind === 'build') { before = stakes(); after = house(t.type); }
       else if (t.kind === 'special') { before = stakes(); after = SPECIAL[t.type](); }
-      else if (t.kind === 'upgrade') { before = house(lot.house.type, lot.house.upgrades); after = house(lot.house.type, lot.house.upgrades.concat(t.type)); }
+      else if (t.kind === 'upgrade') {
+        before = house(lot.house.type, lot.house.upgrades, lot.house.stars || 0);
+        after = house(lot.house.type, t.type === 'star' ? lot.house.upgrades : lot.house.upgrades.concat(t.type), (lot.house.stars || 0) + (t.type === 'star' ? 1 : 0));
+      }
       else if (t.kind === 'demolish') { before = lot.kind === 'house' ? house(lot.house.type, lot.house.upgrades) : rundown(); after = stakes(); }
       const reveal = t.kind === 'demolish' ? 'down' : 'up';
       inner += before;

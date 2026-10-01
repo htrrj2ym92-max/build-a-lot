@@ -23,9 +23,9 @@
       <div id="how" class="how" hidden>
         <ol>
           <li><strong>Buy a lot.</strong> Lots with a red sign are for sale. Click one, then buy it.</li>
-          <li><strong>Build.</strong> Building is free, but every house needs materials and crew time. Buy materials with your cash at the day's market price, and buy more when the price is low.</li>
-          <li><strong>Earn rent.</strong> Tenants move in as soon as a house is finished and pay their rent into your bank once a day.</li>
-          <li><strong>Grow.</strong> Hire more crew, upgrade houses for higher rent, sell at a profit, and open parks, mills and workshops.</li>
+          <li><strong>Build.</strong> Houses need materials and crew time. Materials arrive in 15 seconds; a Sawmill halves their price and delivery time.</li>
+          <li><strong>Earn rent.</strong> Tenants pay daily, but damaged houses earn nothing. A Workshop lets you inspect and repair them.</li>
+          <li><strong>Grow.</strong> Hire crew, add stars, paint or landscape houses, sell properties, and build Sawmills and Workshops.</li>
         </ol>
         <p class="keys">Keys: <kbd>Space</kbd> pause, <kbd>1</kbd>–<kbd>3</kbd> game speed, <kbd>Esc</kbd> deselect, <kbd>M</kbd> mute sound.</p>
       </div>
@@ -54,10 +54,15 @@
       </div>
       <div class="stat" title="Building materials">
         <span class="stat-label">Materials <span id="hud-price" class="price"></span></span>
-        <span class="stat-row"><span id="hud-mat" class="stat-value"></span>
-          <button id="buy1" class="btn small" type="button">+1</button>
-          <button id="buy10" class="btn small" type="button">+10</button>
-          <button id="buy50" class="btn small" type="button">+50</button></span>
+        <span class="stat-row"><span id="hud-mat" class="stat-value"></span></span>
+        <span class="material-orders">
+          <button id="buy100" class="btn small" type="button">+100</button>
+          <button id="buy250" class="btn small" type="button">+250</button>
+          <button id="buy500" class="btn small" type="button">+500</button>
+          <button id="buy1000" class="btn small" type="button">+1,000</button>
+          <button id="buy2500" class="btn small" type="button">+2,500</button>
+          <button id="buy5000" class="btn small" type="button">+5,000</button>
+        </span>
       </div>
       <div class="stat" title="Free crew / total crew">
         <span class="stat-label">Crew</span>
@@ -89,6 +94,12 @@
         </section>
       </aside>
     </main>
+    <div id="delivery-indicator" class="delivery-indicator" role="status" aria-live="polite" hidden>
+      <span class="delivery-truck" aria-hidden="true">🚚</span>
+      <span class="delivery-label">Materials on the way</span>
+      <span class="delivery-track"><i></i></span>
+      <span class="delivery-time"></span>
+    </div>
   </section>
 
   <div id="modal" class="modal" hidden>

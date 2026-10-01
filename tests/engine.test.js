@@ -35,20 +35,26 @@ test('rent is paid into the bank automatically once a day', () => {
   day(s, 1); // construction
   const cash = s.cash;
   day(s, 1);
-  assert.equal(s.cash, cash + D.HOUSES.rambler.rent);
+  assert.equal(s.cash, cash + D.HOUSES.rambler.rents[0]);
   day(s, 4);
-  assert.equal(s.cash, cash + D.HOUSES.rambler.rent * 5, 'rent keeps arriving with no cap');
-  assert.equal(s.stats.rentCollected, D.HOUSES.rambler.rent * 5);
+  assert.equal(s.cash, cash + D.HOUSES.rambler.rents[0] * 5, 'rent keeps arriving with no cap');
+  assert.equal(s.stats.rentCollected, D.HOUSES.rambler.rents[0] * 5);
 });
 
-test('materials cost cash at the market price', () => {
+test('material orders charge fixed prices and deliver after 15 seconds', () => {
   const s = E.createGame(0, 1);
-  const { cash, materials, matPrice } = s;
-  assert.equal(E.actions.buyMaterials(s, 10).ok, true);
-  assert.equal(s.materials, materials + 10);
-  assert.equal(s.cash, cash - matPrice * 10);
-  s.cash = matPrice - 1;
-  assert.match(E.actions.buyMaterials(s, 1).reason, /Needs \$/);
+  const { cash, materials } = s;
+  assert.equal(E.actions.buyMaterials(s, 100).ok, true);
+  assert.equal(s.materials, materials);
+  assert.equal(s.cash, cash - 10000);
+  assert.ok(s.delivery);
+  assert.equal(E.actions.buyMaterials(s, 250).ok, false, 'only one delivery at a time');
+  E.tick(s, D.DELIVERY_SECONDS - 0.1);
+  assert.equal(s.materials, materials);
+  E.tick(s, 0.1);
+  assert.equal(s.materials, materials + 100);
+  s.cash = 9999;
+  assert.match(E.actions.buyMaterials(s, 100).reason, /Needs \$/);
 });
 
 test('upgrades need a share of the house materials and no cash', () => {
@@ -72,7 +78,7 @@ test('actions are refused with a reason when resources are short', () => {
   assert.equal(E.actions.build(s, 0, 'mansion').ok, false, 'types outside the level are unavailable');
 });
 
-test('upgrades raise rent and sale value', () => {
+test('paint raises resale value while stars raise value and rent', () => {
   const s = E.createGame(3, 1); // Dogwood Heights: paint + yard, selling allowed
   const lot = s.lots[0];
   const rent = E.rentFor(s, lot);
@@ -80,9 +86,13 @@ test('upgrades raise rent and sale value', () => {
   assert.equal(E.actions.upgrade(s, lot.id, 'paint').ok, true);
   day(s, 1);
   assert.deepEqual(lot.house.upgrades, ['paint']);
-  assert.ok(E.rentFor(s, lot) > rent);
+  assert.equal(E.rentFor(s, lot), rent);
   assert.ok(E.saleValue(s, lot) > value);
   assert.equal(E.actions.upgrade(s, lot.id, 'paint').ok, false);
+  assert.equal(E.actions.upgrade(s, lot.id, 'star').ok, true);
+  day(s, 1);
+  assert.equal(lot.house.stars, 1);
+  assert.ok(E.rentFor(s, lot) > rent);
 });
 
 test('selling returns the lot to the market', () => {
@@ -110,7 +120,7 @@ test('run-down houses must be bought and torn down before building', () => {
   assert.equal(E.actions.build(s, lot.id, 'rambler').ok, true);
 });
 
-test('parks boost neighbouring rent and mills make materials', () => {
+test('parks boost neighbouring rent and sawmills discount and speed delivery', () => {
   const s = E.createGame(4, 1); // Elm Park
   s.cash = 1e6;
   s.materials = 1e4;
@@ -121,27 +131,96 @@ test('parks boost neighbouring rent and mills make materials', () => {
   E.actions.build(s, 1, 'rambler');
   day(s, 2);
   assert.equal(E.parkBonus(s, s.lots[1]), D.PARK_BONUS);
-  assert.equal(E.rentFor(s, s.lots[1]), Math.round(D.HOUSES.rambler.rent * (1 + D.PARK_BONUS)));
+  assert.equal(E.rentFor(s, s.lots[1]), Math.round(D.HOUSES.rambler.rents[0] * (1 + D.PARK_BONUS)));
   E.actions.buildSpecial(s, 5, 'mill');
   day(s, 2);
-  const mats = s.materials;
-  day(s, 1);
-  assert.equal(s.materials, mats + D.MILL_OUTPUT);
+  const cash = s.cash, mats = s.materials;
+  assert.equal(E.actions.buyMaterials(s, 100).ok, true);
+  assert.equal(s.cash, cash - 5000);
+  E.tick(s, D.SAWMILL_DELIVERY_SECONDS);
+  assert.equal(s.materials, mats + 100);
 });
 
-test('the material market stays inside its price band', () => {
-  const s = E.createGame(0, 42);
-  for (let i = 0; i < 300; i++) {
-    day(s, 1);
-    s.status = 'playing';
-    assert.ok(s.matPrice >= D.MATERIAL_PRICE.min && s.matPrice <= D.MATERIAL_PRICE.max);
+test('the six material bundle prices match the order list', () => {
+  assert.deepEqual(D.MATERIAL_ORDERS, [
+    { amount: 100, price: 10000 }, { amount: 250, price: 22500 }, { amount: 500, price: 40000 },
+    { amount: 1000, price: 75000 }, { amount: 2500, price: 150000 }, { amount: 5000, price: 250000 },
+  ]);
+});
+
+test('house tiers match their construction, worker, value and rent tables', () => {
+  const expected = [
+    ['rambler', 75, 1, 50000, [1000, 1200, 1600, 2000]],
+    ['cottage', 150, 2, 75000, [1500, 1800, 2400, 3000]],
+    ['colonial', 300, 3, 150000, [3000, 3600, 4800, 6000]],
+    ['victorian', 600, 5, 300000, [6000, 7200, 9600, 12000]],
+    ['craftsman', 1200, 7, 600000, [15000, 18000, 24000, 30000]],
+    ['mansion', 2500, 9, 1200000, [25000, 30000, 40000, 50000]],
+  ];
+  for (const [type, materials, workers, value, rents] of expected) {
+    assert.deepEqual(
+      [D.HOUSES[type].materials, D.HOUSES[type].workers, D.HOUSES[type].value, D.HOUSES[type].rents],
+      [materials, workers, value, rents],
+    );
   }
+  assert.ok(D.LEVELS.every((L) => L.canSell));
+  assert.equal(E.createGame(0).lots[2].price, 25000);
 });
 
-test('the same seed replays the same market', () => {
-  const a = E.createGame(0, 7), b = E.createGame(0, 7);
-  day(a, 20); day(b, 20);
-  assert.equal(a.matPrice, b.matPrice);
+test('workshops halve hiring costs, enable inspections, repairs and paid training', () => {
+  const s = E.createGame(5, 1);
+  s.cash = 1000000;
+  s.materials = 10000;
+  s.workers = 7;
+  const existingHouse = s.lots.find((lot) => lot.kind === 'house');
+  assert.match(E.actions.inspect(s, existingHouse.id).reason, /workshop/i);
+  assert.equal(E.actions.buildSpecial(s, 0, 'workshop').ok, true);
+  assert.equal(E.actions.buildSpecial(s, 10, 'workshop').ok, false);
+  day(s, 2);
+  s.workers = 4;
+  assert.equal(E.hireCost(s), 25000);
+  const house = s.lots.find((lot) => lot.kind === 'house');
+  house.house.decay = D.HOUSE_DECAY_DAYS - 0.01;
+  assert.equal(E.actions.inspect(s, house.id).ok, true);
+  assert.equal(house.house.decay, 0);
+  house.house.damaged = true;
+  house.house.decay = D.HOUSE_DECAY_DAYS;
+  const repair = D.REPAIR_MATERIALS[house.house.type];
+  s.materials = repair;
+  assert.equal(E.actions.inspect(s, house.id).ok, true);
+  assert.equal(s.materials, 0);
+  assert.equal(house.house.damaged, false);
+  const beforeTraining = s.cash;
+  assert.equal(E.actions.train(s).ok, true);
+  assert.equal(s.cash, beforeTraining - D.TRAINING_COST);
+  assert.equal(s.workshopTraining, true);
+});
+
+test('hiring follows the specified first-three-worker prices', () => {
+  const s = E.createGame(5, 1);
+  s.cash = 1000000;
+  assert.deepEqual([E.hireCost(s), ...[1, 2].map(() => {
+    E.actions.hire(s);
+    return E.hireCost(s);
+  })], [50000, 90000, 120000]);
+});
+
+test('damaged homes cost half their listed value and demolition returns three-fifths materials', () => {
+  const s = E.createGame(6, 1);
+  const damaged = s.lots.find((lot) => lot.kind === 'damaged-sale');
+  assert.equal(damaged.price, D.HOUSES.rambler.value / 2);
+  assert.equal(E.actions.buyLot(s, damaged.id).ok, true);
+  assert.equal(damaged.kind, 'house');
+  assert.equal(damaged.house.damaged, true);
+  assert.equal(E.rentFor(s, damaged), 0);
+
+  const built = s.lots.find((lot) => lot.owned && lot.kind === 'empty');
+  s.materials = D.HOUSES.cottage.materials;
+  assert.equal(E.actions.build(s, built.id, 'cottage').ok, true);
+  day(s, 1.5);
+  assert.equal(E.actions.demolish(s, built.id).ok, true);
+  day(s, 1);
+  assert.equal(s.materials, Math.floor(D.HOUSES.cottage.materials * 3 / 5));
 });
 
 test('a street never starts with a goal already met', () => {
@@ -167,11 +246,9 @@ test('cash goals track the balance while other goals stay met', () => {
 
 for (const [i, L] of D.LEVELS.entries()) {
   test(`street ${i + 1} (${L.name}) can be won by a simple bot`, () => {
-    for (const seed of [1, 2, 3]) {
-      const s = playLevel(i, seed);
-      assert.equal(s.status, 'won', `seed ${seed} stalled on day ${s.day}`);
-      assert.ok(s.wonDay <= L.expertDays * 1.5, `seed ${seed} took ${s.wonDay} days`);
-    }
+    const s = playLevel(i);
+    assert.equal(s.status, 'won', `stalled on day ${s.day}`);
+    assert.ok(s.wonDay <= L.expertDays * 1.5, `took ${s.wonDay} days`);
   });
 }
 

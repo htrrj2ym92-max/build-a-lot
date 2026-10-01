@@ -139,11 +139,12 @@
         : 'Tearing down';
       return [what, plural(t.workers, 'worker')];
     }
-    if (lot.kind === 'house') return [D.HOUSES[lot.house.type].name, `${fmt(E.rentFor(game, lot))}/day`];
+    if (lot.kind === 'house') return [D.HOUSES[lot.house.type].name, lot.house.damaged ? 'damaged · no rent' : `${fmt(E.rentFor(game, lot))}/day`];
     if (lot.kind === 'special') {
-      const extra = { park: '+20% rent', mill: `+${D.MILL_OUTPUT} mat/day`, workshop: '30% faster' }[lot.special];
+      const extra = { park: '+20% rent', mill: 'materials half price · faster delivery', workshop: 'inspection · cheaper hiring · training' }[lot.special];
       return [D.SPECIALS[lot.special].name, extra];
     }
+    if (lot.kind === 'damaged-sale') return [`Damaged ${D.HOUSES[lot.house.type].name}`, fmt(lot.price)];
     if (lot.kind === 'rundown') return ['Run-down', lot.owned ? 'yours' : fmt(lot.price)];
     return lot.owned ? ['Your lot', 'ready'] : ['For sale', fmt(lot.price)];
   }
@@ -200,11 +201,21 @@
     setText('hud-cash', fmt(s.cash));
     setText('hud-mat', String(s.materials));
     const price = $('hud-price');
-    setText('hud-price', `${fmt(s.matPrice)} ea ${s.matTrend > 0 ? '▲' : s.matTrend < 0 ? '▼' : ''}`);
-    price.className = 'price' + (s.matTrend > 0 ? ' up' : s.matTrend < 0 ? ' down' : '');
-    for (const n of [1, 10, 50]) {
-      $(`buy${n}`).disabled = !!E.checks.materials(s, n);
-      $(`buy${n}`).title = `Buy ${n} for ${fmt(s.matPrice * n)}`;
+    setText('hud-price', E.hasSpecial(s, 'mill') ? '50% off' : 'fixed orders');
+    price.className = 'price' + (E.hasSpecial(s, 'mill') ? ' down' : '');
+    for (const { amount } of D.MATERIAL_ORDERS) {
+      const button = $(`buy${amount}`);
+      const order = E.orderFor(amount);
+      button.disabled = !!E.checks.materials(s, amount);
+      button.title = `Order ${amount.toLocaleString('en-US')} for ${fmt(E.orderPrice(s, order))}; arrives in ${E.hasSpecial(s, 'mill') ? D.SAWMILL_DELIVERY_SECONDS : D.DELIVERY_SECONDS} seconds`;
+    }
+    const indicator = $('delivery-indicator');
+    indicator.hidden = !s.delivery;
+    if (s.delivery) {
+      const progress = 1 - s.delivery.remaining / s.delivery.duration;
+      indicator.style.setProperty('--delivery-progress', `${Math.max(0, Math.min(1, progress)) * 100}%`);
+      indicator.querySelector('.delivery-label').textContent = `${s.delivery.amount.toLocaleString('en-US')} materials on the way`;
+      indicator.querySelector('.delivery-time').textContent = `${Math.max(0, s.delivery.remaining).toFixed(1)}s`;
     }
     setText('hud-crew', `${E.freeWorkers(s)}/${s.workers}`);
     const full = s.workers >= D.LEVELS[s.level].maxWorkers;
@@ -239,7 +250,10 @@
   function costLine(cost, mats, workers, d) {
     const parts = [];
     if (cost) parts.push(fmt(cost));
-    if (mats) parts.push(`${mats} materials (${fmt(mats * game.matPrice)} today)`);
+    if (mats) {
+      const order = D.MATERIAL_ORDERS.find((candidate) => candidate.amount >= mats);
+      parts.push(`${mats} materials${order ? ` (order from ${fmt(E.orderPrice(game, order))})` : ''}`);
+    }
     if (workers) parts.push(plural(workers, 'worker'));
     if (d) parts.push(days(d));
     return parts.join(' · ');
@@ -253,9 +267,11 @@
       <span class="action-cost">${esc(cost)}</span>${why ? `<span class="action-why">${esc(why)}</span>` : ''}</span>
     </button>`;
     const short = mats - game.materials;
-    if (!why || short <= 0 || !/materials/.test(why)) return button;
-    const price = short * game.matPrice;
-    const buy = `<button type="button" class="btn small buy-short" data-buy="${short}" ${game.cash < price ? 'disabled' : ''}>Buy ${short} materials for ${fmt(price)}</button>`;
+    if (!why || short <= 0 || !/materials/.test(why) || game.delivery) return button;
+    const order = D.MATERIAL_ORDERS.find((candidate) => candidate.amount >= short);
+    if (!order) return button;
+    const price = E.orderPrice(game, order);
+    const buy = `<button type="button" class="btn small buy-short" data-buy="${order.amount}" ${game.cash < price ? 'disabled' : ''}>Order ${order.amount.toLocaleString('en-US')} materials for ${fmt(price)}</button>`;
     return `<div class="action-wrap">${button}${buy}</div>`;
   }
   const plainThumb = (t) => `<span class="thumb plain" aria-hidden="true">${t}</span>`;
@@ -264,7 +280,7 @@
   function renderPanel() {
     const s = game;
     const lot = selected == null ? null : s.lots[selected];
-    const sig = JSON.stringify([selected, lot && lotSig(lot), s.cash, s.materials, s.matPrice, E.freeWorkers(s), s.status]);
+    const sig = JSON.stringify([selected, lot && lotSig(lot), s.cash, s.materials, s.delivery, E.freeWorkers(s), s.status, E.hasWorkshop(s)]);
     if (sig === panelSig) return;
     panelSig = sig;
     const L = D.LEVELS[s.level];
@@ -284,10 +300,12 @@
       title = what;
       sub = `Crew of ${crew.replace(/ workers?/, '')} on site. The work finishes on its own.`;
     } else if (!lot.owned) {
-      title = lot.kind === 'rundown' ? 'Run-down house' : 'Lot for sale';
-      sub = lot.kind === 'rundown' ? 'Cheap, but it has to come down before you can build.' : 'An empty lot, ready for a new house.';
+      title = lot.kind === 'rundown' ? 'Run-down house' : lot.kind === 'damaged-sale' ? `Damaged ${D.HOUSES[lot.house.type].name}` : 'Lot for sale';
+      sub = lot.kind === 'rundown' ? 'Cheap, but it has to come down before you can build.'
+        : lot.kind === 'damaged-sale' ? 'Already damaged, so it is half price. Inspect it at your Workshop to restore rent.'
+        : 'An empty lot, ready for a new house.';
       fact('Asking price', fmt(lot.price));
-      acts.push(actionButton({ act: 'buyLot', thumb: plainThumb('$'), name: 'Buy this lot', cost: fmt(lot.price), why: E.checks.buyLot(s, lot) }));
+      acts.push(actionButton({ act: 'buyLot', thumb: plainThumb('$'), name: lot.kind === 'damaged-sale' ? 'Buy damaged house' : 'Buy this lot', cost: fmt(lot.price), why: E.checks.buyLot(s, lot) }));
     } else if (lot.kind === 'rundown') {
       title = 'Run-down house';
       sub = 'Tear it down to free up the lot.';
@@ -297,7 +315,7 @@
       sub = 'Choose what to build.';
       for (const t of L.houses) {
         const h = D.HOUSES[t];
-        acts.push(actionButton({ act: 'build', arg: t, thumb: artThumb('house', t), name: h.name, gain: `${fmt(h.rent)}/day`, cost: costLine(0, h.materials, h.workers, h.days), why: E.checks.build(s, lot, t), mats: h.materials }));
+        acts.push(actionButton({ act: 'build', arg: t, thumb: artThumb('house', t), name: h.name, gain: `${fmt(h.rents[0])}/day`, cost: costLine(0, h.materials, h.workers, h.days), why: E.checks.build(s, lot, t), mats: h.materials }));
       }
       for (const t of L.specials) {
         const sp = D.SPECIALS[t];
@@ -306,23 +324,29 @@
     } else if (lot.kind === 'house') {
       const h = D.HOUSES[lot.house.type];
       title = h.name;
-      sub = lot.house.upgrades.length ? `Upgrades: ${lot.house.upgrades.map((k) => D.UPGRADES[k].name.toLowerCase()).join(', ')}.` : 'Rented and paying every day.';
+      sub = lot.house.damaged ? 'Damaged and not earning rent.' :
+        lot.house.upgrades.length || lot.house.stars ? `${lot.house.stars || 0} star${lot.house.stars === 1 ? '' : 's'} · ${lot.house.upgrades.map((k) => D.UPGRADES[k].name.toLowerCase()).join(', ') || 'no other upgrades'}.`
+          : 'Rented and paying every day.';
       fact('Rent', `${fmt(E.rentFor(s, lot))}/day`);
+      if (lot.house.damaged) fact('Repair materials', String(D.REPAIR_MATERIALS[lot.house.type]));
       const park = E.parkBonus(s, lot);
       if (park) fact('Park bonus', `+${Math.round(park * 100)}%`);
       if (L.canSell) fact('Sale price', fmt(E.saleValue(s, lot)));
       for (const k of L.upgrades) {
-        if (lot.house.upgrades.includes(k)) continue;
+        if (k === 'star' ? (lot.house.stars || 0) >= 3 : lot.house.upgrades.includes(k)) continue;
         const u = D.UPGRADES[k];
         const mats = E.upgradeMaterials(lot.house.type, k);
-        acts.push(actionButton({ act: 'upgrade', arg: k, thumb: plainThumb({ paint: '🖌', yard: '✿', porch: '⌂' }[k]), name: u.name, gain: `+${Math.round(u.rentBonus * 100)}% rent`, cost: costLine(0, mats, u.workers, u.days), why: E.checks.upgrade(s, lot, k), mats }));
+        const gain = k === 'star' ? `+${Math.round(u.valueBonus * 100)}% value · higher rent` : `+${Math.round(u.valueBonus * 100)}% value`;
+        acts.push(actionButton({ act: 'upgrade', arg: k, thumb: plainThumb({ star: '★', paint: '🖌', yard: '✿' }[k]), name: k === 'star' ? `Add star (${(lot.house.stars || 0) + 1}/3)` : u.name, gain, cost: costLine(0, mats, u.workers, u.days), why: E.checks.upgrade(s, lot, k), mats }));
       }
+      acts.push(actionButton({ act: 'inspect', thumb: plainThumb('✓'), name: lot.house.damaged ? 'Inspect and repair' : 'Inspect house', cost: lot.house.damaged ? `${D.REPAIR_MATERIALS[lot.house.type]} repair materials` : 'Resets wear before damage', why: E.checks.inspect(s, lot), mats: lot.house.damaged ? D.REPAIR_MATERIALS[lot.house.type] : 0 }));
       if (L.canSell) acts.push(actionButton({ act: 'sell', thumb: plainThumb('$'), name: 'Sell house and lot', gain: `+${fmt(E.saleValue(s, lot))}`, cost: 'The lot goes back on the market', why: E.checks.sell(s, lot) }));
       acts.push(actionButton({ act: 'demolish', thumb: plainThumb('⌫'), name: 'Tear down', cost: costLine(D.DEMOLISH.cost, 0, D.DEMOLISH.workers, D.DEMOLISH.days), why: E.checks.demolish(s, lot) }));
     } else if (lot.kind === 'special') {
       const sp = D.SPECIALS[lot.special];
       title = sp.name;
       sub = sp.blurb + '.';
+      if (lot.special === 'workshop') acts.push(actionButton({ act: 'train', thumb: plainThumb('⚙'), name: 'Efficiency Training', gain: '2× work speed', cost: fmt(D.TRAINING_COST), why: E.checks.train(s) }));
     }
 
     card.innerHTML = `<h2>${esc(title)}</h2><p class="sub">Lot ${lot.id + 1} · ${esc(sub)}</p>
@@ -359,14 +383,15 @@
     const won = events.some((ev) => ev.type === 'won');
     for (const ev of events) {
       if (ev.type === 'done') S.play('done');
-      else if (ev.type === 'rent') S.play('rent');
-      else if (ev.type === 'materials') S.play('mill');
+      else if (ev.type === 'materials') S.play('materials');
+      else if (ev.type === 'money' && ev.amount > 0) S.play('coin');
       else if (ev.type === 'goal' && !won) S.play('goal');
       else if (ev.type === 'won') S.play('win');
     }
     for (const ev of events) {
       if (ev.type === 'money' && ev.lot != null) floatText(ev.lot, (ev.amount > 0 ? '+' : '') + fmt(ev.amount), ev.amount < 0);
-      else if (ev.type === 'materials') floatText(ev.lot, `+${ev.amount} materials`);
+      else if (ev.type === 'materials' && ev.lot != null) floatText(ev.lot, `+${ev.amount} materials`);
+      else if (ev.type === 'materials') addLog(`${ev.amount.toLocaleString('en-US')} materials delivered`);
       else if (ev.type === 'msg') addLog(ev.text);
       else if (ev.type === 'goal') addLog(`Goal met: ${E.goalLabel(D.LEVELS[game.level].goals[ev.index])}`);
       else if (ev.type === 'won') showWin();
@@ -403,7 +428,7 @@
   // ---------- input ----------
   const ACTION_SOUNDS = {
     buyLot: 'buy', build: 'hammer', buildSpecial: 'hammer', upgrade: 'hammer', demolish: 'crash', sell: 'sell',
-    hire: 'hire', buyMaterials: 'materials',
+    hire: 'hire', buyMaterials: 'buy', inspect: 'done', train: 'hire',
   };
 
   function doAction(act, arg) {
@@ -465,7 +490,7 @@
     $('to-menu').addEventListener('click', () => showScreen('menu'));
     $('sound').addEventListener('click', toggleSound);
     renderSound();
-    for (const n of [1, 10, 50]) $(`buy${n}`).addEventListener('click', () => doAction('buyMaterials', n));
+    for (const { amount } of D.MATERIAL_ORDERS) $(`buy${amount}`).addEventListener('click', () => doAction('buyMaterials', amount));
     $('hire').addEventListener('click', () => doAction('hire'));
     document.querySelector('.speed').addEventListener('click', (e) => {
       const b = e.target.closest('[data-speed]');
