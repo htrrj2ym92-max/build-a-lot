@@ -150,7 +150,7 @@
   }
 
   function lotSig(lot) {
-    return JSON.stringify([lot.kind, lot.owned, lot.house, lot.special, lot.task && [lot.task.kind, lot.task.type],
+    return JSON.stringify([lot.kind, lot.owned, lot.house && [lot.house.type, lot.house.upgrades, lot.house.stars, lot.house.damaged], lot.special, lot.task && [lot.task.kind, lot.task.type],
       lot.kind === 'house' ? E.rentFor(game, lot) : 0, selected === lot.id]);
   }
 
